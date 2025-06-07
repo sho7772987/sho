@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>PuyoPuyo風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: #222;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    canvas {
+      background: #111;
+      border: 2px solid #fff;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="240" height="480"></canvas>
+  <audio id="bgm" src="bgm.mp3" loop></audio>
+  <script>
+    const COLS = 6;
+    const ROWS = 12;
+    const SIZE = 40;
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const COLORS = ["red", "blue", "green", "yellow"];
+    const EMPTY = null;
+    let field = Array.from({ length: ROWS }, () => Array(COLS).fill(EMPTY));
+
+    let falling = createPair();
+    let dropTimer = 0;
+    let dropInterval = 30; // 初期落下速度
+    let score = 0;
+    let gameOver = false;
+    let ranking = JSON.parse(localStorage.getItem("ranking") || "[]");
+
+    const bgm = document.getElementById("bgm");
+    bgm.volume = 0.3;
+
+    document.addEventListener("keydown", handleKey);
+    // ユーザーが初めてキーを押したらBGM再生（ブラウザの自動再生制限対策）
+    function startBGM() {
+      bgm.play().catch(() => {});
+      document.removeEventListener("keydown", startBGM);
+    }
+    document.addEventListener("keydown", startBGM);
+
+    function createPair() {
+      const color1 = COLORS[Math.floor(Math.random() * COLORS.length)];
+      const color2 = COLORS[Math.floor(Math.random() * COLORS.length)];
+      return {
+        blocks: [
+          { x: 2, y: 0, color: color1 },
+          { x: 2, y: -1, color: color2 }
+        ],
+        rotation: 0
+      };
+    }
+
+    function handleKey(e) {
+      if (gameOver) return;
+      if (e.key === "ArrowLeft") move(-1);
+      if (e.key === "ArrowRight") move(1);
+      if (e.key === "ArrowDown") dropFaster();
+      if (e.key === "ArrowUp") rotate();
+    }
+
+    function move(dir) {
+      if (canMove(falling.blocks, dir, 0)) {
+        falling.blocks.forEach(b => b.x += dir);
+      }
+    }
+
+    function dropFaster() {
+      if (canMove(falling.blocks, 0, 1)) {
+        falling.blocks.forEach(b => b.y += 1);
+      } else {
+        land();
+      }
+    }
+
+    function rotate() {
+      const [pivot, other] = falling.blocks;
+      const dx = other.x - pivot.x;
+      const dy = other.y - pivot.y;
+      const rotated = {
+        x: pivot.x - dy,
+        y: pivot.y + dx,
+        color: other.color
+      };
+      if (canMove([pivot, rotated], 0, 0)) {
+        falling.blocks[1] = rotated;
+      }
+    }
+
+    function canMove(blocks, dx, dy) {
+      return blocks.every(b => {
+        const x = b.x + dx;
+        const y = b.y + dy;
+        return x >= 0 && x < COLS && y < ROWS && (y < 0 || field[y][x] === EMPTY);
+      });
+    }
+
+    function land() {
+      falling.blocks.forEach(b => {
+        if (b.y < 0) gameOver = true;
+        else field[b.y][b.x] = b.color;
+      });
+      if (!gameOver) {
+        processChains();
+        falling = createPair();
+      } else {
+        updateRanking();
+      }
+    }
+
+    function processChains() {
+      let chains = 0;
+      let chainBonus = 0;
+      let combo;
+      do {
+        combo = clearMatches();
+        if (combo > 0) {
+          chains++;
+          chainBonus += combo * chains * 10;
+          applyGravity();
+        }
+      } while (combo > 0);
+      score += chainBonus;
+
+      // スコアに応じて落下速度を調整（最低10フレーム間隔まで速くなる）
+      dropInterval = Math.max(10, 30 - Math.floor(score / 100));
+    }
+
+    function clearMatches() {
+      let matched = [];
+      const visited = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if (field[y][x] && !visited[y][x]) {
+            const group = [];
+            floodFill(x, y, field[y][x], group, visited);
+            if (group.length >= 4) matched.push(...group);
+          }
+        }
+      }
+
+      matched.forEach(({ x, y }) => field[y][x] = EMPTY);
+      return matched.length;
+    }
+
+    function floodFill(x, y, color, group, visited) {
+      if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return;
+      if (visited[y][x] || field[y][x] !== color) return;
+      visited[y][x] = true;
+      group.push({ x, y });
+      [[1,0], [-1,0], [0,1], [0,-1]].forEach(([dx,dy]) => floodFill(x+dx, y+dy, color, group, visited));
+    }
+
+    function applyGravity() {
+      for (let x = 0; x < COLS; x++) {
+        for (let y = ROWS - 1; y >= 0; y--) {
+          if (field[y][x] === EMPTY) {
+            for (let k = y - 1; k >= 0; k--) {
+              if (field[k][x]) {
+                field[y][x] = field[k][x];
+                field[k][x] = EMPTY;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    function updateRanking() {
+      ranking.push(score);
+      ranking.sort((a, b) => b - a);
+      ranking = ranking.slice(0, 5);
+      localStorage.setItem("ranking", JSON.stringify(ranking));
+    }
+
+    function update() {
+      if (gameOver) return;
+      dropTimer++;
+      if (dropTimer >= dropInterval) {
+        dropFaster();
+        dropTimer = 0;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if (field[y][x]) drawCircle(x, y, field[y][x]);
+        }
+      }
+
+      falling.blocks.forEach(b => {
+        if (b.y >= 0) drawCircle(b.x, b.y, b.color);
+      });
+
+      ctx.fillStyle = "white";
+      ctx.font = "16px sans-serif";
+      ctx.fillText("Score: " + score, 10, 20);
+
+      if (gameOver) {
+        ctx.fillStyle = "red";
+        ctx.font = "30px sans-serif";
+        ctx.fillText("GAME OVER", 30, 200);
+        ctx.fillStyle = "yellow";
+        ctx.font = "16px sans-serif";
+        ctx.fillText("ランキング：", 50, 230);
+        ranking.forEach((s, i) => {
+          ctx.fillText(`${i + 1}位：${s}`, 60, 250 + i * 20);
+        });
+      }
+    }
+
+    function drawCircle(x, y, color) {
+      ctx.beginPath();
+      ctx.arc(x * SIZE + SIZE / 2, y * SIZE + SIZE / 2, SIZE / 2 - 2, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = "black";
+      ctx.stroke();
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>
